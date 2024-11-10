@@ -1,0 +1,9 @@
+[package]
+name = "arborist"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = "4.5.20"
+serde = { version = "1.0.214", features = ["derive"] }
+tokio = { version = "1.41.1", features = ["full"] }
