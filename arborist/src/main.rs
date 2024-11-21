@@ -1,8 +1,10 @@
-use anyhow::Result;
 use clap::Parser;
+use summary::generate_folder_summary;
+use utils::DirScanConfig;
 
 mod file_management;
-mod gen_tags;
+mod summary;
+mod utils;
 
 #[derive(Debug, clap::Parser)]
 #[clap(
@@ -15,19 +17,21 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    //let model = "qwen2.5:1.5b".to_string();
-    //let prompt = "How many r's does strawberry have".to_string();
-    //let system =
-    //    "You are a helpful assistant who only replies with 2-3 sentences and not more.".to_string();
-    //
-    //let response = gen_tags::gen_summary(model, prompt, system).await?;
-    //println!("{}", response);
+    let scan_config = DirScanConfig::new(args.path);
+    let mut scan_result = scan_config.scan_dir().await?;
 
-    let _ = file_management::scan_dir(args.path);
-    println!("hi");
+    println!("{}", scan_result);
+
+    // Generate summaries for each folder
+    for folder in &mut scan_result.folder_metadata_list {
+        println!("generating summary for: {:?}", folder);
+        let summary = generate_folder_summary("gemma2:2b", folder).await?;
+        println!("Folder Summary: {}", summary);
+        folder.summary = summary;
+    }
 
     Ok(())
 }
