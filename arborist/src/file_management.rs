@@ -24,6 +24,7 @@ pub struct FileMetadata {
     pub created_at: SystemTime,
     #[serde_as(as = "serde_with::TimestampSeconds<i64>")]
     pub modified_at: SystemTime,
+    pub summary: String,
 }
 
 #[serde_as]
@@ -42,25 +43,6 @@ pub struct FolderMetadata {
     pub summary: String,
 }
 
-//impl FileType {
-//    pub fn from_path(path: &str) -> FileType {
-//        let mime_type = from_path(path)
-//            .first()
-//            .map(|m| m.to_string())
-//            .unwrap_or_else(|| "application/octet-stream".to_string());
-//
-//        match mime_type.as_str() {
-//            m if m.starts_with("text") => FileType::Document,
-//            m if m.starts_with("image") => FileType::Image,
-//            m if m.starts_with("audio") => FileType::Audio,
-//            m if m.starts_with("video") => FileType::Video,
-//            m if m.starts_with("application") && path.ends_with(".zip") => FileType::Archive,
-//            m if m.starts_with("application") && path.ends_with(".tar") => FileType::Archive,
-//            _ => FileType::Other,
-//        }
-//    }
-//}
-
 impl FileType {
     pub fn from_path(path: &str) -> FileType {
         let file_extension = match Path::new(path).extension() {
@@ -71,8 +53,8 @@ impl FileType {
         match file_extension.as_ref() {
             "epub" | "pdf" | "txt" | "docx" | "md" | "epage" | "rtf" | "fb2" | "azw3" | "mobi"
             | "doc" | "xlsx" | "csv" | "tex" | "bib" | "json" | "xml" | "html" | "conf"
-            | "settings" | "prop" | "log" | "djvu" | "cls" | "pkt" | "sav" | "set" | "bin"
-            | "backup" | "bundle" | "typ" | "scpt" | "ePub" | "PDF" | "DOCX" | "XLSX" => {
+            | "pptx" | "settings" | "prop" | "log" | "djvu" | "cls" | "pkt" | "sav" | "set"
+            | "bin" | "backup" | "bundle" | "typ" | "scpt" | "ePub" | "PDF" | "DOCX" | "XLSX" => {
                 FileType::Document
             }
             "jpg" | "png" | "jpeg" | "gif" | "bmp" | "tiff" | "webp" | "svg" | "heic" | "avif"

@@ -144,6 +144,7 @@ impl DirScanConfig {
                             filetype: file_type,
                             created_at,
                             modified_at,
+                            summary: String::new(),
                         });
                     }
                 }
@@ -196,7 +197,6 @@ impl fmt::Display for DirScanResult {
         }
 
         writeln!(f, "Scan Took: {:?}", self.elapsed_time)?;
-        writeln!(f, "Show file and folder lists? (y/n)")?;
 
         Ok(())
     }
