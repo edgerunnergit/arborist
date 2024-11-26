@@ -1,6 +1,8 @@
+use crate::config::Config;
 use crate::file_management::FileMetadata;
+use crate::summary::generate_file_summary;
 use crate::utils::setup_fastembed;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use fastembed::{SparseEmbedding, SparseTextEmbedding, TextEmbedding};
 use log::info;
 use qdrant_client::qdrant::{
@@ -82,49 +84,79 @@ async fn generate_embeddings(
     Ok((dense_embeddings, sparse_embeddings))
 }
 
+/// Checks if a file has already been indexed in the database
+async fn is_file_already_indexed(client: &Qdrant, file_path: &str) -> anyhow::Result<bool> {
+    let query_result = client
+        .query(
+            QueryPointsBuilder::new("file_data")
+                .filter(Filter::must([Condition::matches(
+                    "file_path",
+                    file_path.to_string(),
+                )]))
+                .limit(1),
+        )
+        .await
+        .context("Failed to query existing file")?;
+
+    Ok(!query_result.result.is_empty())
+}
+
+/// Generate summary only if not already present
+async fn get_or_generate_summary(
+    config: &Config,
+    file: &FileMetadata,
+    force_regenerate: bool,
+) -> Result<String> {
+    // If summary is already present and we're not forcing regeneration, return it
+    if !force_regenerate && !file.summary.is_empty() {
+        return Ok(file.summary.clone());
+    }
+
+    // Generate summary
+    generate_file_summary(&config.scan.model_name, file)
+        .await
+        .context("Failed to generate file summary")
+}
+
+/// Process and prepare files sequentially
 pub async fn process_and_upload_files(
     client: &Qdrant,
-    file_metadata_list: &Vec<FileMetadata>,
+    config: &Config,
+    file_metadata_list: &[FileMetadata],
+    force_regenerate: Option<bool>, // Changed to Option<bool>
 ) -> Result<()> {
+    // Set default value if force_regenerate is None
+    let force_regenerate = force_regenerate.unwrap_or(false);
+
+    // Setup embedding models
     let (model, sparse_model) = setup_fastembed()?;
 
     let mut points: Vec<PointStruct> = Vec::new();
 
+    // Process files sequentially
     for file in file_metadata_list {
-        // Check if the file path already exists in the collection
-        let query_result = client
-            .query(
-                QueryPointsBuilder::new("file_data")
-                    .filter(Filter::must([Condition::matches(
-                        "file_path",
-                        file.path.clone(),
-                    )]))
-                    .limit(1),
-            )
-            .await;
-
-        if let Ok(response) = query_result {
-            if !response.result.is_empty() {
-                println!("File path '{}' already exists. Skipping.", file.path);
-                continue;
-            }
-        } else {
-            eprintln!(
-                "Error querying file path '{}': {:?}. Skipping.",
-                file.path, query_result
-            );
+        // Check if file is already indexed
+        if is_file_already_indexed(client, &file.path).await? {
+            println!("File path '{}' already exists. Skipping.", file.path);
             continue;
         }
 
-        let summary = file.summary.clone();
+        // Generate summary sequentially to manage Ollama load
+        let summary = match get_or_generate_summary(config, file, force_regenerate).await {
+            Ok(sum) => sum,
+            Err(e) => {
+                eprintln!("Failed to generate summary for {}: {}", file.name, e);
+                continue;
+            }
+        };
 
-        // Generate both dense and sparse embeddings
-        let (dense_embeddings, sparse_embeddings) =
-            match generate_embeddings(summary, &model, &sparse_model).await {
+        // Generate embeddings
+        let (dense_embeddings, _sparse_embeddings) =
+            match generate_embeddings(summary.clone(), &model, &sparse_model).await {
                 Ok(embeddings) => embeddings,
-                Err(err) => {
-                    eprintln!("Error generating embeddings for {}: {}", file.name, err);
-                    continue; // Skip to the next file if embeddings fail
+                Err(e) => {
+                    eprintln!("Failed to generate embeddings for {}: {}", file.name, e);
+                    continue;
                 }
             };
 
@@ -133,41 +165,37 @@ pub async fn process_and_upload_files(
         payload.insert("file_name", Value::from(file.name.clone()));
         payload.insert("file_path", Value::from(file.path.clone()));
         payload.insert("file_size", Value::from(file.size as i64));
+        payload.insert("summary", Value::from(summary));
 
-        if let (Some(dense_embedding), Some(_sparse_embedding)) =
-            (dense_embeddings.first(), sparse_embeddings.first())
-        {
+        // Create point if embeddings are available
+        if let Some(dense_embedding) = dense_embeddings.first() {
             let mut vectors_map: HashMap<String, Vec<f32>> = HashMap::new();
             vectors_map.insert("novum".to_string(), dense_embedding.clone());
 
-            // TODO: fix adding sparse vectors
-            //let sparse_values: Vec<f32> = sparse_embedding.values.to_vec(); // Extract values
-            //vectors_map.insert("splade".to_string(), sparse_values);
-
             let uuid = Uuid::new_v4();
-
-            let point = PointStruct::new(uuid.to_string(), vectors_map, payload.clone());
+            let point = PointStruct::new(uuid.to_string(), vectors_map, payload);
             points.push(point);
         } else {
-            eprintln!(
-                "Error: Could not generate embeddings for file: {}",
-                file.name
-            );
+            eprintln!("No dense embeddings generated for file: {}", file.name);
         }
     }
-    // Now upsert the collected points
-    match client
-        .upsert_points(UpsertPoints {
-            collection_name: "file_data".to_string(),
-            wait: Some(true),
-            points,
-            ..Default::default() // Use default values for other fields
-        })
-        .await
-    {
-        Ok(_) => println!("Points upserted successfully!"),
-        Err(err) => eprintln!("Error upserting points: {}", err),
-    };
+
+    // Upsert points
+    if !points.is_empty() {
+        client
+            .upsert_points(UpsertPoints {
+                collection_name: "file_data".to_string(),
+                wait: Some(true),
+                points: points.clone(),
+                ..Default::default()
+            })
+            .await
+            .context("Failed to upsert points")?;
+
+        println!("Points upserted successfully: {} files", points.len());
+    } else {
+        println!("No new files to upsert.");
+    }
 
     Ok(())
 }
