@@ -3,11 +3,9 @@ use anyhow::{Context, Result};
 use base64::Engine;
 use calamine::{open_workbook, Reader, Xlsx};
 use dotext::{pptx::Pptx, MsDoc};
+use log::info;
 use ollama_rs::{
-    generation::{
-        completion::{request::GenerationRequest, GenerationResponse},
-        images::Image,
-    },
+    generation::{completion::request::GenerationRequest, images::Image},
     Ollama,
 };
 use pandoc::InputFormat;
@@ -18,6 +16,7 @@ use std::{fs::File, path::Path};
 use tokio::fs::read;
 
 pub async fn generate_file_summary(model: &str, file_metadata: &FileMetadata) -> Result<String> {
+    info!("Processing: {}", file_metadata.path.clone());
     let content = match file_metadata.filetype {
         FileType::Document => read_document(file_metadata.path.clone()).await?,
         FileType::Image => return generate_image_summary(file_metadata.path.clone()).await,
@@ -165,6 +164,7 @@ fn read_pdf(file_path: &str) -> Result<String> {
 
 // Updated read_document function with exhaustive pattern matching
 pub async fn read_document(file_path: String) -> Result<String> {
+    info!("Processing Document: {file_path}");
     let input_format = detect_input_format(&file_path);
 
     match input_format {

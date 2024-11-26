@@ -1,14 +1,15 @@
 use crate::file_management::{FileMetadata, FileType, FolderMetadata};
 use anyhow::Result;
+use fastembed::{EmbeddingModel, InitOptions, SparseTextEmbedding, TextEmbedding};
 use ollama_rs::generation::completion::request::GenerationRequest;
 use ollama_rs::Ollama;
 use qdrant_client::qdrant::SearchPoints;
 use qdrant_client::Qdrant;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 use std::time::Instant;
+use std::{collections::HashMap, path::PathBuf};
 use tokio::fs::metadata;
 use walkdir::{DirEntry, WalkDir};
 
@@ -46,7 +47,7 @@ fn count_folders_in_folder(path: &Path) -> u32 {
 // DirScanConfig struct and its implementation
 #[derive(Serialize, Deserialize, Debug)]
 pub struct DirScanConfig {
-    path: String,
+    path: PathBuf,
     skip_hidden: bool,
     paths_to_skip: Option<Vec<String>>,
 }
@@ -54,7 +55,7 @@ pub struct DirScanConfig {
 impl Default for DirScanConfig {
     fn default() -> Self {
         DirScanConfig {
-            path: ".".to_string(),
+            path: ".".into(),
             skip_hidden: true,
             paths_to_skip: Some(vec![
                 "node_modules".to_string(),
@@ -70,7 +71,7 @@ impl Default for DirScanConfig {
 }
 
 impl DirScanConfig {
-    pub fn new(path: String) -> Self {
+    pub fn new(path: PathBuf) -> Self {
         DirScanConfig {
             path,
             ..Default::default()
@@ -256,4 +257,13 @@ fn should_skip(entry: &DirEntry, paths_to_skip: &Option<Vec<String>>) -> bool {
         }
     }
     false
+}
+
+pub fn setup_fastembed() -> anyhow::Result<(TextEmbedding, SparseTextEmbedding)> {
+    let model = TextEmbedding::try_new(
+        InitOptions::new(EmbeddingModel::NomicEmbedTextV15).with_show_download_progress(true),
+    )?;
+    let sparse_model = SparseTextEmbedding::try_new(Default::default())?;
+
+    Ok((model, sparse_model))
 }

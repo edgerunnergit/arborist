@@ -1,86 +1,92 @@
-use anyhow::Ok;
-use clap::Parser;
-use fastembed::{EmbeddingModel, InitOptions, SparseTextEmbedding, TextEmbedding};
-use qdrant_client::qdrant::ScrollPointsBuilder;
+use clap::{Parser, Subcommand};
+use log::{debug, info};
 use qdrant_client::Qdrant;
-use summary::generate_file_summary;
-use text_splitter::{ChunkConfig, TextSplitter};
-use tokenizers::Tokenizer;
-use utils::DirScanConfig;
+use std::path::PathBuf;
 
-mod database;
-mod file_management;
-mod summary;
-mod utils;
+use crate::config::Config;
+use arborist::database::{self, chunk_string};
+use arborist::summary::generate_file_summary;
+use arborist::utils::{setup_fastembed, DirScanConfig};
+
+mod config;
 
 #[derive(Debug, clap::Parser)]
 #[clap(
     name = "Arborist",
     about = "Arborist is a file-management utility tool powered by dark forces."
 )]
-struct Args {
-    #[clap(short, long)]
-    path: String,
-    #[clap(short, long)]
-    query: String,
+#[command(version, about, long_about = None)]
+struct Cli {
+    #[arg(short, long)]
+    config: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    Scan {
+        // file path to scan
+        #[arg()]
+        path: PathBuf,
+    },
+
+    Query {
+        // query string from user
+        #[arg()]
+        query: String,
+    },
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    // Initialize env_logger
+    env_logger::init();
 
-    let client = Qdrant::from_url("http://localhost:6334").build()?;
-    let model = TextEmbedding::try_new(
-        InitOptions::new(EmbeddingModel::NomicEmbedTextV15).with_show_download_progress(true),
-    )?;
-    let sparse_model = SparseTextEmbedding::try_new(Default::default())?;
+    // Parse the Cli
+    let cli = Cli::parse();
 
-    database::create_hybrid_collection(&client, "file_data").await?;
+    // Load the configuration
+    let config = Config::load(cli.config)?;
+    info!("Loaded config: {:#?}", config);
 
-    let scan_config = DirScanConfig::new(args.path);
-    let mut scan_result = scan_config.scan_dir().await?;
+    let (model, sparse_model) = setup_fastembed()?;
 
-    //println!("{:#?}", scan_result);
-    let tokenizer = Tokenizer::from_pretrained("bert-base-cased", None).unwrap();
-    let max_tokens = 20..40;
-    let splitter = TextSplitter::new(ChunkConfig::new(max_tokens).with_sizer(tokenizer));
+    // Initialize Qdrant client
+    let client = Qdrant::from_url(&config.db_url).build()?;
+    database::create_hybrid_collection(&client, &config.collection_name).await?;
 
-    //Generate summaries for each folder
-    for file in &mut scan_result.file_metadata_list {
-        println!("generating summary for: {:#?}", file);
-        let summary = generate_file_summary("gemma2:2b", file).await?;
-        println!("--------------------------------------------");
-        println!("File Summary: {}", summary);
-        println!("--------------------------------------------");
-        file.summary = summary.clone();
+    match &cli.command {
+        Commands::Scan { path } => {
+            let scan_config = DirScanConfig::new(path.to_path_buf());
+            let mut scan_result = scan_config.scan_dir().await?;
 
-        let chunks = splitter.chunks(&summary);
-        for chunk in chunks {
-            println!("chunk here: {}", chunk)
+            for file in &mut scan_result.file_metadata_list {
+                let summary = generate_file_summary(&config.scan.model_name, file).await?;
+                file.summary = summary.clone();
+            }
+
+            database::process_and_upload_files(&client, &scan_result.file_metadata_list).await?;
         }
 
-        //let chunks = splitter.chunks(summary;
-        let summary_vec = vec![summary];
-        let embeddings = model.embed(summary_vec.clone(), None)?;
-        let _sparse_embeddings = sparse_model.embed(summary_vec, None)?;
+        Commands::Query { query } => {
+            //let transformed_query = chunk_string(query, "bert-base-cased", 20..40);
+            let sparse_query_vector = sparse_model.embed([query].to_vec(), None)?;
+            let query_vector = model.embed([query].to_vec(), None)?[0].clone();
+            debug!("Query Vector: {:?}", query_vector);
+            debug!("Sparse Query Vector: {:?}", sparse_query_vector);
 
-        println!("Embeddings length: {}", embeddings.len()); // -> Embeddings length: 4
-        println!("Embedding dimension: {}", embeddings[0].len()); // -> Embedding dimension: 384
+            database::query_and_print_file_paths(
+                &client,
+                &config.collection_name,
+                query_vector,
+                config.query.top_k_results,
+                false,
+            )
+            .await?;
+        }
     }
-
-    let query_vector = model.embed([args.query].to_vec(), None)?[0].clone(); // Example query vector
-    let collection_name = "file_data";
-
-    // Query and print file paths using dense vector matching
-    database::query_and_print_file_paths(&client, collection_name, query_vector, 5, false).await?;
-
-    //database::process_and_upload_files(&client, &scan_result.file_metadata_list).await?;
-
-    let a = client
-        .scroll(ScrollPointsBuilder::new("file_data").limit(10))
-        .await?;
-
-    //println!("All elems: {:#?}", a);
 
     Ok(())
 }

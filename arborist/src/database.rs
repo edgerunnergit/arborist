@@ -1,6 +1,8 @@
 use crate::file_management::FileMetadata;
+use crate::utils::setup_fastembed;
 use anyhow::Result;
-use fastembed::{EmbeddingModel, InitOptions, SparseEmbedding, SparseTextEmbedding, TextEmbedding};
+use fastembed::{SparseEmbedding, SparseTextEmbedding, TextEmbedding};
+use log::info;
 use qdrant_client::qdrant::{
     Condition, CreateCollectionBuilder, Distance, Filter, PointStruct, QueryPointsBuilder,
     SearchParamsBuilder, SparseVectorParamsBuilder, SparseVectorsConfigBuilder, UpsertPoints,
@@ -15,7 +17,7 @@ use uuid::Uuid;
 pub async fn create_hybrid_collection(client: &Qdrant, collection_name: &str) -> Result<()> {
     // Check if the collection already exists
     if client.collection_exists(collection_name).await? {
-        println!(
+        info!(
             "Collection '{}' already exists. Skipping creation.",
             collection_name
         );
@@ -39,12 +41,12 @@ pub async fn create_hybrid_collection(client: &Qdrant, collection_name: &str) ->
         )
         .await?;
 
-    println!("collection created");
+    println!("New collection created");
 
     Ok(())
 }
 
-fn chunk_string(
+pub fn chunk_string(
     input: &str,
     tokenizer_name: &str,
     max_tokens: std::ops::Range<usize>,
@@ -84,10 +86,7 @@ pub async fn process_and_upload_files(
     client: &Qdrant,
     file_metadata_list: &Vec<FileMetadata>,
 ) -> Result<()> {
-    let model = TextEmbedding::try_new(
-        InitOptions::new(EmbeddingModel::NomicEmbedTextV15).with_show_download_progress(true),
-    )?;
-    let sparse_model = SparseTextEmbedding::try_new(Default::default())?;
+    let (model, sparse_model) = setup_fastembed()?;
 
     let mut points: Vec<PointStruct> = Vec::new();
 
@@ -116,6 +115,7 @@ pub async fn process_and_upload_files(
             );
             continue;
         }
+
         let summary = file.summary.clone();
 
         // Generate both dense and sparse embeddings
